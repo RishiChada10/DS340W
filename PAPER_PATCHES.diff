@@ -1,0 +1,218 @@
+diff -u original/evaluate.R ./evaluate.R
+--- original/evaluate.R	2026-10-05 18:02:44.748633949 +0000
++++ ./evaluate.R	2026-10-05 18:03:17.866503682 +0000
+@@ -40,6 +40,13 @@
+ evaluate <- function(..., data_test, target, metric = NULL){
+ 
+   models <- list(...)
++  # DS340W PATCH 4: keep the positional slots before NULLs are dropped.
++  # forester() always passes catboost, xgboost, ranger, lightgbm in that order,
++  # which is what makes model1..model4 mean catboost..lightgbm in Rcodes.Rmd.
++  # Upstream re-indexes after dropping failed (NULL) models, so if catboost is
++  # not installed, "model3" silently becomes LightGBM instead of the random
++  # forest, and models[[4]] is out of bounds.
++  slots <- list(...)
+ 
+   ### Starting conditions
+   if (length(models) == 0){
+@@ -112,10 +119,10 @@
+   message("The best model based on ", metric, " metric is ", best_model$label, ".")
+ 
+   return(list(best_model = best_model,
+-              model1 = models[[1]],
+-              model2 = models[[2]],
+-              model3 = models[[3]],
+-              model4 = models[[4]],
++              model1 = slots[[1]],   # DS340W PATCH 4
++              model2 = slots[[2]],
++              model3 = slots[[3]],
++              model4 = slots[[4]],
+               results = results))
+ }
+ 
+diff -u original/forester.R ./forester.R
+--- original/forester.R	2026-10-05 18:02:44.748671642 +0000
++++ ./forester.R	2026-10-05 18:03:17.865909139 +0000
+@@ -51,6 +51,11 @@
+ 
+   message("__________________________")
+   message("FORESTER")
++  # DS340W PATCH 3: the tuning branches of make_*() were not updated for
++  # current xgboost / lightgbm APIs. The paper never tuned (tune = FALSE is
++  # the default and Rcodes.Rmd never sets it), so fail loudly rather than
++  # silently dropping models.
++  if (isTRUE(tune)) stop("tune = TRUE is not supported by the DS340W-patched forester files.")
+   data <- check_conditions(data, target, type)
+ 
+   ### If data_test is blank, it is needed to split data into data_train and data_test by the train_ratio
+@@ -85,7 +90,13 @@
+                                                refclass = refclass)),
+     silent = TRUE
+   )
+-  if (class(is_available_ranger) == "try-error") {
++  # DS340W PATCH 1: class() has length 2 on success, and `if` on a length-2
++  # condition is an error since R 4.2. Upstream fixed this the same way in
++  # forester commit 2160324 (2022-08-21).
++  if (inherits(is_available_ranger, "try-error")) {
++    # DS340W PATCH 2: show the real error. Upstream reports every failure as
++    # "package not available", which hid API breakages in later versions.
++    message("    reason: ", conditionMessage(attr(is_available_ranger, "condition")))
+     ranger_exp <- NULL
+     message("--- Omitting `make_ranger()` because the `ranger` package is not available ---")
+   } else {
+@@ -99,7 +110,13 @@
+                                                    num_features = num_features)),
+     silent = TRUE
+   )
+-  if (class(is_available_catboost) == "try-error") {
++  # DS340W PATCH 1: class() has length 2 on success, and `if` on a length-2
++  # condition is an error since R 4.2. Upstream fixed this the same way in
++  # forester commit 2160324 (2022-08-21).
++  if (inherits(is_available_catboost, "try-error")) {
++    # DS340W PATCH 2: show the real error. Upstream reports every failure as
++    # "package not available", which hid API breakages in later versions.
++    message("    reason: ", conditionMessage(attr(is_available_catboost, "condition")))
+     catboost_exp <- NULL
+     message("--- Omitting `make_catboost()` because the `catboost` package is not available ---")
+   } else {
+@@ -113,7 +130,13 @@
+                                                   num_features = num_features)),
+     silent = TRUE
+   )
+-  if (class(is_available_xgboost) == "try-error") {
++  # DS340W PATCH 1: class() has length 2 on success, and `if` on a length-2
++  # condition is an error since R 4.2. Upstream fixed this the same way in
++  # forester commit 2160324 (2022-08-21).
++  if (inherits(is_available_xgboost, "try-error")) {
++    # DS340W PATCH 2: show the real error. Upstream reports every failure as
++    # "package not available", which hid API breakages in later versions.
++    message("    reason: ", conditionMessage(attr(is_available_xgboost, "condition")))
+     xgboost_exp <- NULL
+     message("--- Omitting `make_xgboost()` because the `xgboost` package is not available ---")
+   } else {
+@@ -127,7 +150,13 @@
+                                                    num_features = num_features)),
+     silent = TRUE
+   )
+-  if (class(is_available_lightgbm) == "try-error") {
++  # DS340W PATCH 1: class() has length 2 on success, and `if` on a length-2
++  # condition is an error since R 4.2. Upstream fixed this the same way in
++  # forester commit 2160324 (2022-08-21).
++  if (inherits(is_available_lightgbm, "try-error")) {
++    # DS340W PATCH 2: show the real error. Upstream reports every failure as
++    # "package not available", which hid API breakages in later versions.
++    message("    reason: ", conditionMessage(attr(is_available_lightgbm, "condition")))
+     lightgbm_exp <- NULL
+     message("--- Omitting `make_lightgbm()` because the `lightgbm` package is not available ---")
+   } else {
+diff -u original/make_lightgbm.R ./make_lightgbm.R
+--- original/make_lightgbm.R	2026-10-05 18:02:44.748710743 +0000
++++ ./make_lightgbm.R	2026-10-05 18:03:17.867648930 +0000
+@@ -94,12 +94,16 @@
+       )
+ 
+   ### Creating Model:
++    # DS340W PATCH 8: lightgbm >= 4.0 no longer forwards extra arguments, so
++    # `learning_rate = 0.4` errors with "unused argument". Same values as the
++    # paper (10 rounds, learning rate 0.4), passed through `params`, which
++    # also works on lightgbm 3.x.
+     model <- lightgbm::lightgbm(
+       data = dtrain,
++      params = list(learning_rate = 0.4,
++                    objective = ifelse(type == "regression", "regression", "binary")),
+       verbose = -1,
+-      learning_rate = 0.4,
+-      nrounds = 10,
+-      objective = ifelse(type == "regression", "regression", "binary"))
++      nrounds = 10)
+   } else {
+     # Checking the metric
+     message('--- Starting tuning process')
+diff -u original/make_ranger.R ./make_ranger.R
+--- original/make_ranger.R	2026-10-05 18:02:44.748735696 +0000
++++ ./make_ranger.R	2026-10-05 18:03:17.866719072 +0000
+@@ -153,9 +153,20 @@
+     newdata <- as.data.frame(recipes::bake(rec, newdata))
+ 
+     if(is_classif == TRUE){#changed
+-      if(is.null(refclass)){
+-        preds <- predict(object, newdata)$predictions[,2]
+-        } else {preds <- predict(object, newdata)$predictions[,1]}#changed
++      # DS340W PATCH 5: pick the P(goal) column by class value, not position.
++      # With a numeric 0/1 target, ranger orders probability columns by order
++      # of first appearance in the training rows and leaves them unnamed, so
++      # column 2 is P(goal) only if the first training row is a non-goal.
++      # The paper's `refclass` switch patched one case by hand; this handles
++      # every case. `refclass` is still accepted but no longer needed.
++      probs <- predict(object, newdata)$predictions
++      if (!is.null(colnames(probs)) && "1" %in% colnames(probs)) {
++        goal_col <- which(colnames(probs) == "1")
++      } else {
++        goal_col <- which(object$forest$class.values == 1)
++      }
++      if (length(goal_col) != 1) stop("Could not identify the P(goal) column in ranger output.")
++      preds <- probs[, goal_col]
+     } else {preds <- predict(object, newdata)$predictions}
+     return(preds)
+   }
+diff -u original/make_xgboost.R ./make_xgboost.R
+--- original/make_xgboost.R	2026-10-05 18:02:44.748750626 +0000
++++ ./make_xgboost.R	2026-10-05 20:35:02.427287559 +0000
+@@ -84,7 +84,12 @@
+     form <- stats::as.formula(paste(target , "~."))
+ 
+     rec_encoding <- recipes::recipe(form, data)
+-    encode_step <- recipes::step_dummy(rec_encoding, recipes::all_predictors())
++    # DS340W PATCH 9: dummy-encode the factor predictors only. recipes >= 1.0
++    # errors when step_dummy() is pointed at numeric columns ("All columns
++    # selected for the step should be factor or ordered"); the 2022 version
++    # passed them through untouched. all_nominal_predictors() reproduces
++    # the 2022 result exactly.
++    encode_step <- recipes::step_dummy(rec_encoding, recipes::all_nominal_predictors())
+     suppressWarnings(encode_step_trained <- recipes::prep(encode_step, training = data))
+ 
+     data_encoded <- as.data.frame(recipes::bake(encode_step_trained, data))
+@@ -111,12 +116,15 @@
+       xgboost::xgb.DMatrix(data = data_encoded_matrix, label = label_column)
+ 
+ 
+-    model <- xgboost::xgb.train(data = dtrain,
++    # DS340W PATCH 6: booster parameters go in `params`. Passing them as
++    # loose arguments is deprecated in xgboost >= 2 and slated to become an
++    # error. Same values as the paper: 20 rounds, xgboost defaults otherwise.
++    model <- xgboost::xgb.train(params = list(
++                                  objective = ifelse(type == "regression","reg:squarederror","binary:logistic"),
++                                  eval_metric = ifelse(type == "regression","rmse","logloss")),
++                                data = dtrain,
+                                 verbose = 0,
+-                                nrounds = 20,
+-                                objective = ifelse(type == "regression","reg:squarederror","binary:logistic"),
+-                                eval_metric = ifelse(type == "regression","rmse","logloss")
+-    )
++                                nrounds = 20)
+   } else {
+     message('--- Starting tuning process')
+     # Checking the metric
+@@ -217,16 +225,18 @@
+ 
+ 
+   ### Creating predict function:
+-  model$modifications <- modifications
+-  model$encoding <- encoding_recipe
++  # DS340W PATCH 7: do not attach list elements to the booster. Since xgboost
++  # 2.1 a booster is a one-element ALTREP list, not a plain list. The predict
++  # function below reads the two recipes from this function's environment
++  # instead (the same way make_lightgbm.R already does).
+ 
+   xgboost_predict <- function(object, newdata) {
+     # Changing data type to data frame
+     newdata <- check_conditions(newdata)
+ 
+     # Applying modifications
+-    rec <- object$modifications
+-    rec_enc <- object$encoding
++    rec <- modifications        # DS340W PATCH 7
++    rec_enc <- encoding_recipe  # DS340W PATCH 7
+ 
+     newdata <- as.data.frame(recipes::bake(rec, newdata))
+     if (!is.null(rec_enc)){
